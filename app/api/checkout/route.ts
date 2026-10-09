@@ -90,8 +90,7 @@ export async function POST(request: Request) {
       .select("id,order_number,total_amount")
       .single();
 
-    if (orderError || !order) {
-      console.error("Order insert failed:", orderError?.message);
+    console.error("Order insert failed:", JSON.stringify(orderError, null, 2));
       return NextResponse.json({ error: "Pesanan tidak berjaya disimpan. Cuba lagi." }, { status: 500 });
     }
 
