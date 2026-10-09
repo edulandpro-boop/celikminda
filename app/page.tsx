@@ -19,7 +19,7 @@ const money = (value: number | string) => `RM${Number(value).toFixed(2)}`;
 
 export default function HomePage() {
   const [products, setProducts] = useState<Product[]>([]);
-  const [selectedSku, setSelectedSku] = useState("CMAB-HC");
+  const [selectedSku, setSelectedSku] = useState("CMAB-PDF");
   const [form, setForm] = useState<FormState>(initialForm);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -83,7 +83,7 @@ export default function HomePage() {
             <div>
               <span className="eyebrow">Ujian · 20 Oktober 2026</span>
               <h1>Jom Bantu Anak Bersedia Untuk Ujian Celik Minda!</h1>
-              <p>Persediaan awal bersama mak ayah di rumah melalui bahan ulang kaji Celik Minda PASTI. Pilih PDF untuk cetak sendiri atau hardcopy yang dihantar terus kepada anda.</p>
+              <p>Setiap Set A (5 Tahun) dan Set B (6 Tahun) mengandungi 6 set latihan merangkumi Bahasa Melayu, Bahasa Arab, Bahasa Inggeris, Jawi, Matematik dan Sains. Pilih PDF untuk cetak sendiri atau hardcopy bercetak yang dihantar ke alamat anda.</p>
               <div className="actions">
                 <a className="btn btn-gold" href="#produk">Pilih Set Anak <span aria-hidden="true">→</span></a>
                 <a className="btn btn-light" href="#cara">Cara Pembelian</a>
@@ -93,8 +93,8 @@ export default function HomePage() {
               <div className="floating float-one">Persediaan dari rumah</div>
               <img
                 className="hero-product-image"
-                src="/images/combo-set-a-b.jpg"
-                alt="Cover Combo Latihan Celik Minda Set 5 dan 6 Tahun"
+                src="/images/celik-minda-infografik.png"
+                alt="Infografik Ulang Kaji Celik Minda PASTI: Set A 5 Tahun, Set B 6 Tahun, enam mata pelajaran dan pilihan PDF atau hardcopy"
               />
               <div className="floating float-two">PDF &amp; Hardcopy tersedia</div>
             </div>
@@ -110,26 +110,52 @@ export default function HomePage() {
             </div>
             <div className="cards">
               {[
-                { sku: "CMA-PDF", title: "Set A · 5 Tahun", desc: "PDF digital untuk dicetak sendiri.", price: "RM10", badge: "FORMAT PDF", image: "/images/set-a-6-tahun.jpg", alt: "Cover Set A Latihan Celik Minda untuk 5 tahun" },
-                { sku: "CMB-PDF", title: "Set B · 6 Tahun", desc: "PDF digital untuk dicetak sendiri.", price: "RM10", badge: "FORMAT PDF", image: "/images/set-b-5-tahun.jpg", alt: "Cover Set B Latihan Celik Minda untuk 6 tahun" },
-                { sku: "CMAB-HC", title: "Combo Set A + B", desc: "Kedua-dua set bercetak. Postage termasuk dalam harga.", price: "RM20", badge: "COMBO JIMAT", image: "/images/combo-set-a-b.jpg", alt: "Cover Combo Set A dan Set B Latihan Celik Minda", featured: true },
+                { sku: "CMA-PDF", title: "Set A · 5 Tahun", desc: "6 set latihan untuk 5 tahun, merangkumi 6 mata pelajaran.", badge: "FORMAT PDF", image: "/images/set-a-5-tahun.png", alt: "Poster Set A untuk kanak-kanak 5 tahun dengan enam mata pelajaran" },
+                { sku: "CMB-PDF", title: "Set B · 6 Tahun", desc: "6 set latihan untuk 6 tahun, merangkumi 6 mata pelajaran.", badge: "FORMAT PDF", image: "/images/set-b-6-tahun.png", alt: "Poster Set B untuk kanak-kanak 6 tahun dengan enam mata pelajaran" },
+                { sku: "CMAB-PDF", title: "Combo Set A + B · PDF", desc: "Gabungan 12 set latihan untuk umur 5 dan 6 tahun.", badge: "COMBO PDF", image: "/images/combo-set-a-b-baru.png", alt: "Poster Combo Set A 5 Tahun dan Set B 6 Tahun, pilihan PDF RM18 dan hardcopy RM20", featured: true },
+                { sku: "CMAB-HC", title: "Combo Set A + B · Hardcopy", desc: "Kedua-dua set bercetak dan dihantar ke alamat anda.", badge: "COMBO HARDCOPY", image: null, alt: "", featured: false, hardcopy: true },
               ].map((card) => {
                 const product = products.find((p) => p.sku === card.sku);
                 return <article className={`product ${card.featured ? "featured" : ""}`} key={card.sku}>
-                  <img className="product-image" src={card.image} alt={card.alt} loading="lazy" />
+                  {card.image ? <img className="product-image" src={card.image} alt={card.alt} loading="lazy" /> : <div className="product-image product-placeholder" role="img" aria-label="Combo Set A dan B hardcopy RM20 termasuk postage"><span>COMBO SET A + B</span><strong>HARDCOPY</strong><b>RM20</b><small>Termasuk postage</small></div>}
                   <div className="product-top"><span className={`pill ${card.featured ? "gold" : ""}`}>{card.badge}</span>{card.featured && <span aria-hidden="true">✦</span>}</div>
                   <h3>{card.title}</h3>
                   <p className="desc">{card.desc}</p>
-                  <div className="price">{product ? money(product.price) : card.price}</div>
-                  <div className="price-note">{card.featured ? "Termasuk postage" : "Harga untuk satu set"}</div>
-                  <button className={`btn ${card.featured ? "btn-green" : "btn-gold"}`} onClick={() => chooseProduct(card.sku)}>Pilih set ini</button>
-                  <small>Bayaran selamat melalui Bayarcash. {card.sku === "CMAB-HC" ? "Combo hardcopy RM20 termasuk postage." : "Hardcopy satu set RM15 setiap satu."}</small>
+                  <div className="price">{product ? money(product.price) : "—"}</div>
+                  <div className="price-note">{card.sku === "CMAB-HC" ? "RM20 termasuk postage" : card.sku === "CMAB-PDF" ? "PDF digital · tiada penghantaran fizikal" : "PDF digital · cetak sendiri"}</div>
+                  <button className={`btn ${card.featured ? "btn-green" : "btn-gold"}`} onClick={() => chooseProduct(card.sku)}>Pilih {card.sku.endsWith("HC") ? "hardcopy" : "PDF"}</button>
+                  <small>{card.sku === "CMAB-HC" ? "Bahan bercetak dihantar ke alamat anda." : card.sku === "CMAB-PDF" ? "Harga ini untuk Combo PDF, bukan hardcopy." : "Pilihan hardcopy satu set tersedia di borang tempahan."}</small>
                 </article>;
               })}
             </div>
             <div style={{ textAlign: "center", marginTop: 22, color: "var(--muted)", fontSize: 13 }}>
               Set A PDF RM10 · Set A hardcopy RM15 · Set B PDF RM10 · Set B hardcopy RM15 · Combo PDF RM18 · Combo hardcopy RM20 termasuk postage.
             </div>
+          </div>
+        </section>
+
+        <section className="section subjects-section" id="kandungan">
+          <div className="shell">
+            <div className="section-head">
+              <span className="kicker">Kandungan pembelajaran</span>
+              <h2 className="section-title">6 Set Latihan, 6 Mata Pelajaran</h2>
+              <p>Set A direka untuk anak berumur 5 tahun dan Set B untuk anak berumur 6 tahun. Setiap set merangkumi enam set latihan bagi membantu ulang kaji di rumah secara berperingkat.</p>
+            </div>
+            <div className="subject-grid">
+              {[
+                { icon: "ب", title: "Bahasa Melayu", detail: "Latihan asas bahasa dan kefahaman." },
+                { icon: "ع", title: "Bahasa Arab", detail: "Pengenalan huruf dan asas Bahasa Arab." },
+                { icon: "ABC", title: "Bahasa Inggeris", detail: "Pengenalan bahasa Inggeris asas." },
+                { icon: "ج", title: "Jawi", detail: "Latihan mengenal dan membaca Jawi." },
+                { icon: "123", title: "Matematik", detail: "Latihan nombor dan kemahiran asas." },
+                { icon: "✿", title: "Sains", detail: "Penerokaan konsep sains asas." },
+              ].map((subject) => <article className="subject-card" key={subject.title}>
+                <div className="subject-icon" aria-hidden="true">{subject.icon}</div>
+                <h3>{subject.title}</h3>
+                <p>{subject.detail}</p>
+              </article>)}
+            </div>
+            <p className="subjects-note">Pilih format PDF untuk akses digital dan cetak sendiri, atau Hardcopy untuk bahan bercetak. Kandungan sebenar tertakluk pada fail latihan bagi setiap set.</p>
           </div>
         </section>
 
@@ -159,10 +185,10 @@ export default function HomePage() {
               <div className="field">
                 <label htmlFor="sku">Pilih produk</label>
                 <select id="sku" value={selectedSku} onChange={(e) => setSelectedSku(e.target.value)} required>
-                  <option value="CMA-PDF">Set A · 6 tahun · PDF · RM10</option>
-                  <option value="CMA-HC">Set A · 6 tahun · Hardcopy · RM15</option>
-                  <option value="CMB-PDF">Set B · 5 tahun · PDF · RM10</option>
-                  <option value="CMB-HC">Set B · 5 tahun · Hardcopy · RM15</option>
+                  <option value="CMA-PDF">Set A · 5 Tahun · PDF · RM10</option>
+                  <option value="CMA-HC">Set A · 5 Tahun · Hardcopy · RM15</option>
+                  <option value="CMB-PDF">Set B · 6 Tahun · PDF · RM10</option>
+                  <option value="CMB-HC">Set B · 6 Tahun · Hardcopy · RM15</option>
                   <option value="CMAB-PDF">Combo Set A + B · PDF · RM18</option>
                   <option value="CMAB-HC">Combo Set A + B · Hardcopy · RM20 termasuk postage</option>
                 </select>

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { Bayarcash, PaymentChannel } from "bayarcash-ts-sdk";
 
 export const runtime = "nodejs";
@@ -34,7 +34,21 @@ export async function POST(request: Request) {
     if (!sku || !customerName || !phone) {
       return NextResponse.json({ error: "Sila isi nama, nombor telefon dan produk." }, { status: 400 });
     }
-    const { data: product, error: productError } = await supabaseAdmin
+    const token = process.env.BAYARCASH_API_TOKEN;
+    const secret = process.env.BAYARCASH_API_SECRET_KEY;
+    const portalKey = process.env.BAYARCASH_PORTAL_KEY;
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+
+    if (!token || !secret || !portalKey || !siteUrl) {
+      return NextResponse.json({
+        error: "Bayaran belum dikonfigurasi. Pentadbir perlu melengkapkan BAYARCASH_API_TOKEN, BAYARCASH_API_SECRET_KEY, BAYARCASH_PORTAL_KEY dan NEXT_PUBLIC_SITE_URL di Vercel.",
+      }, { status: 503 });
+    }
+
+    const sandbox = process.env.BAYARCASH_SANDBOX !== "false";
+    const bayarcash = new Bayarcash(token, { sandbox, apiVersion: "v3" });
+
+    const { data: product, error: productError } = await getSupabaseAdmin()
       .from("celik_minda_products")
       .select("id,sku,name,age_group,format,price_sen,includes_postage,active")
       .eq("sku", sku)
@@ -44,7 +58,7 @@ export async function POST(request: Request) {
     if (productError || !product) {
       return NextResponse.json({ error: "Produk tidak dijumpai atau tidak aktif." }, { status: 404 });
     }
-    if (product.format === "Hardcopy" && (!address || !postcode || !city || !state)) {
+    if (String(product.format).toLowerCase() === "hardcopy" && (!address || !postcode || !city || !state)) {
       return NextResponse.json({ error: "Untuk hardcopy, sila isi alamat penuh, poskod, bandar dan negeri." }, { status: 400 });
     }
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -56,7 +70,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Harga produk tidak sah." }, { status: 400 });
     }
 
-    const { data: order, error: orderError } = await supabaseAdmin
+    const { data: order, error: orderError } = await getSupabaseAdmin()
       .from("celik_minda_orders")
       .insert({
         customer_name: customerName,
@@ -66,7 +80,7 @@ export async function POST(request: Request) {
         postcode: postcode || null,
         city: city || null,
         state: state || null,
-        payment_method: "ONLINE",
+        payment_method: "BAYARCASH",
         payment_status: "pending",
         order_status: "pending",
         subtotal: amount,
@@ -81,7 +95,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Pesanan tidak berjaya disimpan. Cuba lagi." }, { status: 500 });
     }
 
-    const { error: itemError } = await supabaseAdmin.from("celik_minda_order_items").insert({
+    const { error: itemError } = await getSupabaseAdmin().from("celik_minda_order_items").insert({
       order_id: order.id,
       product_id: product.id,
       product_name: `${product.name} (${product.age_group})`,
@@ -92,22 +106,10 @@ export async function POST(request: Request) {
 
     if (itemError) {
       console.error("Order item insert failed:", itemError.message);
-      await supabaseAdmin.from("celik_minda_orders").delete().eq("id", order.id);
+      await getSupabaseAdmin().from("celik_minda_orders").delete().eq("id", order.id);
       return NextResponse.json({ error: "Butiran pesanan tidak berjaya disimpan." }, { status: 500 });
     }
 
-    const token = process.env.BAYARCASH_API_TOKEN;
-    const secret = process.env.BAYARCASH_API_SECRET_KEY;
-    const portalKey = process.env.BAYARCASH_PORTAL_KEY;
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
-
-    if (!token || !secret || !portalKey || !siteUrl) {
-      console.error("Bayarcash environment variables are missing.");
-      return NextResponse.json({ error: "Bayaran belum dikonfigurasi. Sila hubungi pentadbir." }, { status: 500 });
-    }
-
-    const sandbox = process.env.BAYARCASH_SANDBOX !== "false";
-    const bayarcash = new Bayarcash(token, { sandbox, apiVersion: "v3" });
     const paymentData = {
       portal_key: portalKey,
       payment_channel: PaymentChannel.FPX,
@@ -119,15 +121,25 @@ export async function POST(request: Request) {
       return_url: `${siteUrl.replace(/\/$/, "")}/payment/return`,
       callback_url: `${siteUrl.replace(/\/$/, "")}/api/bayarcash/callback`,
     };
-    const checksum = bayarcash.createPaymentIntentChecksumValue(secret, paymentData);
-    const payment = await bayarcash.createPaymentIntent({ ...paymentData, checksum });
+    try {
+      const checksum = bayarcash.createPaymentIntentChecksumValue(secret, paymentData);
+      const payment = await bayarcash.createPaymentIntent({ ...paymentData, checksum });
 
-    if (!payment?.url) {
-      console.error("Bayarcash response did not include a checkout URL.");
-      return NextResponse.json({ error: "Pautan pembayaran tidak diterima. Cuba lagi." }, { status: 502 });
+      if (!payment?.url) {
+        await getSupabaseAdmin().from("celik_minda_orders")
+          .update({ payment_status: "failed", order_status: "cancelled" })
+          .eq("id", order.id).eq("payment_status", "pending");
+        console.error("Bayarcash response did not include a checkout URL.");
+        return NextResponse.json({ error: "Pautan pembayaran tidak diterima. Cuba lagi." }, { status: 502 });
+      }
+
+      return NextResponse.json({ checkoutUrl: payment.url, orderNumber: order.order_number });
+    } catch (gatewayError) {
+      await getSupabaseAdmin().from("celik_minda_orders")
+        .update({ payment_status: "failed", order_status: "cancelled" })
+        .eq("id", order.id).eq("payment_status", "pending");
+      throw gatewayError;
     }
-
-    return NextResponse.json({ checkoutUrl: payment.url, orderNumber: order.order_number });
   } catch (error) {
     console.error("Checkout error:", error instanceof Error ? error.message : "Unknown error");
     return NextResponse.json({ error: "Tidak dapat memulakan pembayaran. Sila cuba lagi." }, { status: 500 });

@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>\"']/g, (char) => ({
@@ -14,7 +14,7 @@ export async function deliverPaidPdfOrder(order: { id: string; order_number: str
   const from = process.env.EMAIL_FROM;
   if (!apiKey || !from) throw new Error("Missing RESEND_API_KEY or EMAIL_FROM environment variable.");
 
-  const { data: items, error: itemsError } = await supabaseAdmin
+  const { data: items, error: itemsError } = await getSupabaseAdmin()
     .from("celik_minda_order_items")
     .select("product_id, product_name, format")
     .eq("order_id", order.id);
@@ -22,7 +22,7 @@ export async function deliverPaidPdfOrder(order: { id: string; order_number: str
   if (!items?.length) throw new Error("No items found for paid order.");
 
   const productIds = [...new Set(items.map((item) => item.product_id).filter(Boolean))];
-  const { data: products, error: productsError } = await supabaseAdmin
+  const { data: products, error: productsError } = await getSupabaseAdmin()
     .from("celik_minda_products")
     .select("id, sku, pdf_path")
     .in("id", productIds);
@@ -31,7 +31,7 @@ export async function deliverPaidPdfOrder(order: { id: string; order_number: str
   const skus = items.map((item) => skuById.get(item.product_id) || "");
   const wantsPdf = items.some((item, index) => String(item.format || "").toLowerCase() === "pdf" || skus[index].endsWith("-PDF"));
   if (!wantsPdf) {
-    await supabaseAdmin.from("celik_minda_orders").update({ delivery_email_status: "not_required" }).eq("id", order.id);
+    await getSupabaseAdmin().from("celik_minda_orders").update({ delivery_email_status: "not_required" }).eq("id", order.id);
     return { sent: false, reason: "hardcopy_only" as const };
   }
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { deliverPaidPdfOrder } from "@/lib/email-delivery";
 import { Bayarcash } from "bayarcash-ts-sdk";
 
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     if (!orderNumber) return new NextResponse("Missing order number", { status: 400 });
 
     if (status === "3") {
-      const { data: order, error: findError } = await supabaseAdmin
+      const { data: order, error: findError } = await getSupabaseAdmin()
         .from("celik_minda_orders")
         .select("id, order_number, customer_name, email, payment_status, delivery_email_status")
         .eq("order_number", orderNumber)
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
       if (!order) return new NextResponse("Order not found", { status: 404 });
 
       if (order.payment_status !== "paid") {
-        const { error: updateError } = await supabaseAdmin
+        const { error: updateError } = await getSupabaseAdmin()
           .from("celik_minda_orders")
           .update({ payment_status: "paid", order_status: "confirmed" })
           .eq("id", order.id);
@@ -49,7 +49,7 @@ export async function POST(request: Request) {
 
       // Claim delivery before sending, so duplicate callbacks do not normally send duplicate emails.
       if (["pending", "failed"].includes(String(order.delivery_email_status || "pending"))) {
-        const { data: claimed, error: claimError } = await supabaseAdmin
+        const { data: claimed, error: claimError } = await getSupabaseAdmin()
           .from("celik_minda_orders")
           .update({ delivery_email_status: "sending" })
           .eq("id", order.id)
@@ -64,13 +64,13 @@ export async function POST(request: Request) {
           try {
             await deliverPaidPdfOrder(order);
             // The helper marks hardcopy-only orders as not_required.
-            await supabaseAdmin.from("celik_minda_orders")
+            await getSupabaseAdmin().from("celik_minda_orders")
               .update({ delivery_email_status: "sent", delivery_email_sent_at: new Date().toISOString() })
               .eq("id", order.id)
               .eq("delivery_email_status", "sending");
           } catch (deliveryError) {
             console.error("Automatic PDF delivery failed:", deliveryError instanceof Error ? deliveryError.message : "Unknown error");
-            await supabaseAdmin.from("celik_minda_orders")
+            await getSupabaseAdmin().from("celik_minda_orders")
               .update({ delivery_email_status: "failed" })
               .eq("id", order.id)
               .eq("delivery_email_status", "sending");
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
         }
       }
     } else if (["2", "4", "5"].includes(status)) {
-      await supabaseAdmin.from("celik_minda_orders")
+      await getSupabaseAdmin().from("celik_minda_orders")
         .update({ payment_status: "failed", order_status: "cancelled" })
         .eq("order_number", orderNumber)
         .eq("payment_status", "pending");
