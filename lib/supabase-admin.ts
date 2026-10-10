@@ -26,3 +26,4 @@ export const supabaseAdmin = createClient(
 export function getSupabaseAdmin() {
   return supabaseAdmin;
 }
+export const supabaseAdmin = getSupabaseAdmin();
