@@ -1,5 +1,6 @@
+
 import { NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 import { Bayarcash, PaymentChannel } from "bayarcash-ts-sdk";
 
 export const runtime = "nodejs";
@@ -15,132 +16,267 @@ type CheckoutBody = {
   state?: string;
 };
 
-function clean(value: unknown, max = 250) {
+function clean(value: unknown, max = 250): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
 export async function POST(request: Request) {
+  let orderId: string | null = null;
+
   try {
     const body = (await request.json()) as CheckoutBody;
+
     const sku = clean(body.sku, 30);
     const customerName = clean(body.customerName, 150);
     const phone = clean(body.phone, 30);
-    const email = clean(body.email, 250);
+    const email = clean(body.email, 250).toLowerCase();
     const address = clean(body.address, 500);
     const postcode = clean(body.postcode, 12);
     const city = clean(body.city, 100);
     const state = clean(body.state, 100);
 
-    if (!sku || !customerName || !phone) {
-      return NextResponse.json({ error: "Sila isi nama, nombor telefon dan produk." }, { status: 400 });
+    if (!sku || !customerName || !phone || !email) {
+      return NextResponse.json(
+        { error: "Sila isi nama, nombor telefon, e-mel dan produk." },
+        { status: 400 }
+      );
     }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return NextResponse.json(
+        { error: "Sila masukkan alamat e-mel yang sah." },
+        { status: 400 }
+      );
+    }
+
     const token = process.env.BAYARCASH_API_TOKEN;
     const secret = process.env.BAYARCASH_API_SECRET_KEY;
     const portalKey = process.env.BAYARCASH_PORTAL_KEY;
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+
+    const siteUrl = (
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      (process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : "")
+    ).replace(/\/$/, "");
 
     if (!token || !secret || !portalKey || !siteUrl) {
-      return NextResponse.json({
-        error: "Bayaran belum dikonfigurasi. Pentadbir perlu melengkapkan BAYARCASH_API_TOKEN, BAYARCASH_API_SECRET_KEY, BAYARCASH_PORTAL_KEY dan NEXT_PUBLIC_SITE_URL di Vercel.",
-      }, { status: 503 });
+      console.error("Checkout configuration is incomplete.");
+
+      return NextResponse.json(
+        { error: "Konfigurasi pembayaran belum lengkap." },
+        { status: 503 }
+      );
     }
 
     const sandbox = process.env.BAYARCASH_SANDBOX !== "false";
-    const bayarcash = new Bayarcash(token, { sandbox, apiVersion: "v3" });
 
-    const { data: product, error: productError } = await getSupabaseAdmin()
+    const { data: product, error: productError } = await supabaseAdmin
       .from("celik_minda_products")
-      .select("id,sku,name,age_group,format,price_sen,includes_postage,active")
+      .select(
+        "id, sku, name, age_group, format, price_sen, includes_postage, active"
+      )
       .eq("sku", sku)
       .eq("active", true)
-      .single();
+      .maybeSingle();
 
-    if (productError || !product) {
-      return NextResponse.json({ error: "Produk tidak dijumpai atau tidak aktif." }, { status: 404 });
-    }
-    if (String(product.format).toLowerCase() === "hardcopy" && (!address || !postcode || !city || !state)) {
-      return NextResponse.json({ error: "Untuk hardcopy, sila isi alamat penuh, poskod, bandar dan negeri." }, { status: 400 });
-    }
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return NextResponse.json({ error: "Sila masukkan alamat e-mel yang sah untuk rekod pembayaran." }, { status: 400 });
-    }
+    if (productError) {
+      console.error("Product lookup failed:", productError.message);
 
-    const amount = Number(product.price_sen) / 100;
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return NextResponse.json({ error: "Harga produk tidak sah." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Tidak dapat menyemak produk." },
+        { status: 500 }
+      );
     }
 
-    const { data: order, error: orderError } = await getSupabaseAdmin()
+    if (!product) {
+      return NextResponse.json(
+        { error: "Produk tidak dijumpai atau tidak aktif." },
+        { status: 404 }
+      );
+    }
+
+    const isHardcopy =
+      String(product.format).toLowerCase() === "hardcopy";
+
+    if (isHardcopy && (!address || !postcode || !city || !state)) {
+      return NextResponse.json(
+        {
+          error:
+            "Untuk hardcopy, sila isi alamat penuh, poskod, bandar dan negeri.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const subtotalSen = Number(product.price_sen);
+
+    if (!Number.isSafeInteger(subtotalSen) || subtotalSen <= 0) {
+      console.error("Invalid product price:", product.price_sen);
+
+      return NextResponse.json(
+        { error: "Harga produk tidak sah." },
+        { status: 400 }
+      );
+    }
+
+    // Harga database dalam sen; Bayarcash menerima amaun dalam RM.
+    const postageSen = 0;
+    const totalSen = subtotalSen + postageSen;
+    const amountRM = Number((totalSen / 100).toFixed(2));
+
+    // order_number wajib diisi berdasarkan skema database.
+    const orderNumber =
+      `CM${Date.now()}${Math.random().toString(36).slice(2, 7)}`
+        .toUpperCase()
+        .slice(0, 30);
+
+    const { data: order, error: orderError } = await supabaseAdmin
       .from("celik_minda_orders")
       .insert({
+        order_number: orderNumber,
         customer_name: customerName,
-        phone,
-        email,
-        delivery_address: address || null,
+        customer_email: email,
+        customer_phone: phone,
+        shipping_address: address || null,
         postcode: postcode || null,
         city: city || null,
         state: state || null,
+        payment_provider: "bayarcash",
         payment_method: "BAYARCASH",
         payment_status: "pending",
         order_status: "pending",
-        subtotal: amount,
-        postage_fee: 0,
-        total_amount: amount,
+        subtotal_sen: subtotalSen,
+        postage_sen: postageSen,
+        total_sen: totalSen,
+        currency: "MYR",
       })
-      .select("id,order_number,total_amount")
+      .select("id, order_number, total_sen")
       .single();
 
-    console.error("Order insert failed:", JSON.stringify(orderError, null, 2));
-      return NextResponse.json({ error: "Pesanan tidak berjaya disimpan. Cuba lagi." }, { status: 500 });
+    if (orderError || !order) {
+      console.error(
+        "Order insert failed:",
+        JSON.stringify(orderError, null, 2)
+      );
+
+      return NextResponse.json(
+        { error: "Pesanan tidak berjaya disimpan. Cuba lagi." },
+        { status: 500 }
+      );
     }
 
-    const { error: itemError } = await getSupabaseAdmin().from("celik_minda_order_items").insert({
-      order_id: order.id,
-      product_id: product.id,
-      product_name: `${product.name} (${product.age_group})`,
-      format: product.format,
-      quantity: 1,
-      unit_price: amount,
-    });
+    orderId = order.id;
+
+    const { error: itemError } = await supabaseAdmin
+      .from("celik_minda_order_items")
+      .insert({
+        order_id: order.id,
+        product_id: product.id,
+        product_name: `${product.name} (${product.age_group ?? ""})`.trim(),
+        format: product.format,
+        quantity: 1,
+        unit_price: amountRM,
+      });
 
     if (itemError) {
       console.error("Order item insert failed:", itemError.message);
-      await getSupabaseAdmin().from("celik_minda_orders").delete().eq("id", order.id);
-      return NextResponse.json({ error: "Butiran pesanan tidak berjaya disimpan." }, { status: 500 });
+
+      await supabaseAdmin
+        .from("celik_minda_orders")
+        .delete()
+        .eq("id", order.id)
+        .eq("payment_status", "pending");
+
+      return NextResponse.json(
+        { error: "Butiran pesanan tidak berjaya disimpan." },
+        { status: 500 }
+      );
     }
+
+    const bayarcash = new Bayarcash(token, {
+      sandbox,
+      apiVersion: "v3",
+    });
 
     const paymentData = {
       portal_key: portalKey,
       payment_channel: PaymentChannel.FPX,
       order_number: String(order.order_number).slice(0, 30),
-      amount: Number(amount.toFixed(2)),
+      amount: amountRM,
       payer_name: customerName,
       payer_email: email,
       payer_telephone_number: phone,
-      return_url: `${siteUrl.replace(/\/$/, "")}/payment/return`,
-      callback_url: `${siteUrl.replace(/\/$/, "")}/api/bayarcash/callback`,
+      return_url: `${siteUrl}/payment/return`,
+      callback_url: `${siteUrl}/api/bayarcash/callback`,
     };
+
     try {
-      const checksum = bayarcash.createPaymentIntentChecksumValue(secret, paymentData);
-      const payment = await bayarcash.createPaymentIntent({ ...paymentData, checksum });
+      const checksum = bayarcash.createPaymentIntentChecksumValue(
+        secret,
+        paymentData
+      );
+
+      const payment = await bayarcash.createPaymentIntent({
+        ...paymentData,
+        checksum,
+      });
 
       if (!payment?.url) {
-        await getSupabaseAdmin().from("celik_minda_orders")
-          .update({ payment_status: "failed", order_status: "cancelled" })
-          .eq("id", order.id).eq("payment_status", "pending");
-        console.error("Bayarcash response did not include a checkout URL.");
-        return NextResponse.json({ error: "Pautan pembayaran tidak diterima. Cuba lagi." }, { status: 502 });
+        console.error(
+          "Bayarcash response did not contain a checkout URL."
+        );
+
+        await supabaseAdmin
+          .from("celik_minda_orders")
+          .update({
+            payment_status: "failed",
+            order_status: "cancelled",
+          })
+          .eq("id", order.id)
+          .eq("payment_status", "pending");
+
+        return NextResponse.json(
+          { error: "Pautan pembayaran tidak diterima. Cuba lagi." },
+          { status: 502 }
+        );
       }
 
-      return NextResponse.json({ checkoutUrl: payment.url, orderNumber: order.order_number });
+      return NextResponse.json({
+        checkoutUrl: payment.url,
+        orderNumber: order.order_number,
+      });
     } catch (gatewayError) {
-      await getSupabaseAdmin().from("celik_minda_orders")
-        .update({ payment_status: "failed", order_status: "cancelled" })
-        .eq("id", order.id).eq("payment_status", "pending");
-      throw gatewayError;
+      console.error(
+        "Bayarcash payment intent failed:",
+        gatewayError instanceof Error
+          ? gatewayError.message
+          : gatewayError
+      );
+
+      await supabaseAdmin
+        .from("celik_minda_orders")
+        .update({
+          payment_status: "failed",
+          order_status: "cancelled",
+        })
+        .eq("id", order.id)
+        .eq("payment_status", "pending");
+
+      return NextResponse.json(
+        { error: "Bayaran gagal dimulakan. Sila cuba lagi." },
+        { status: 502 }
+      );
     }
   } catch (error) {
-    console.error("Checkout error:", error instanceof Error ? error.message : "Unknown error");
-    return NextResponse.json({ error: "Tidak dapat memulakan pembayaran. Sila cuba lagi." }, { status: 500 });
+    console.error(
+      "Checkout error:",
+      error instanceof Error ? error.message : error
+    );
+
+    return NextResponse.json(
+      { error: "Tidak dapat memulakan pembayaran. Sila cuba lagi." },
+      { status: 500 }
+    );
   }
 }
