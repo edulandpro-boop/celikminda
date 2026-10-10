@@ -1,6 +1,6 @@
 
 import { NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 import { deliverPaidPdfOrder } from "@/lib/email-delivery";
 import { Bayarcash } from "bayarcash-ts-sdk";
 
@@ -8,162 +8,260 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
-    const secret = process.env.BAYARCASH_API_SECRET_KEY;
     const token = process.env.BAYARCASH_API_TOKEN;
+    const secretKey = process.env.BAYARCASH_API_SECRET_KEY;
 
-    if (!secret || !token) {
-      return new NextResponse("Missing gateway configuration", {
-        status: 500,
+    if (!token || !secretKey) {
+      console.error("Bayarcash credentials are missing.");
+
+      return NextResponse.json(
+        { error: "Payment configuration is incomplete." },
+        { status: 500 }
+      );
+    }
+
+    const contentType = request.headers.get("content-type") || "";
+    let callbackData: Record<string, string> = {};
+
+    if (contentType.includes("application/json")) {
+      const body = await request.json();
+
+      for (const [key, value] of Object.entries(body)) {
+        callbackData[key] = String(value ?? "");
+      }
+    } else {
+      const formData = await request.formData();
+
+      formData.forEach((value, key) => {
+        callbackData[key] = String(value);
       });
     }
 
-    const form = await request.formData();
-    const data: Record<string, string> = {};
-
-    form.forEach((value, key) => {
-      data[key] = String(value);
-    });
-
-    const sandbox = process.env.BAYARCASH_SANDBOX !== "false";
     const bayarcash = new Bayarcash(token, {
-      sandbox,
+      sandbox: process.env.BAYARCASH_SANDBOX === "true",
       apiVersion: "v3",
     });
 
-    const valid = bayarcash.verifyTransactionCallbackData(
-      data as never,
-      secret,
+    const isValid = bayarcash.verifyTransactionCallbackData(
+      callbackData,
+      secretKey
     );
 
-    if (!valid) {
-      return new NextResponse("Invalid checksum", { status: 400 });
+    if (!isValid) {
+      console.error("Bayarcash callback verification failed.");
+
+      return NextResponse.json(
+        { error: "Invalid callback verification." },
+        { status: 400 }
+      );
     }
 
-    const orderNumber = data.order_number;
-    const status = String(data.status ?? "");
+    const orderNumber = callbackData.order_number;
+    const paymentStatus = String(callbackData.status ?? "");
 
     if (!orderNumber) {
-      return new NextResponse("Missing order number", { status: 400 });
+      return NextResponse.json(
+        { error: "Missing order number." },
+        { status: 400 }
+      );
     }
 
-    const supabase = getSupabaseAdmin();
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from("celik_minda_orders")
+      .select("*")
+      .eq("order_number", orderNumber)
+      .maybeSingle();
 
-    if (status === "3") {
-      const { data: order, error } = await supabase
-        .from("celik_minda_orders")
-        .select(
-          "id, order_number, customer_name, email, payment_status, delivery_email_status",
-        )
-        .eq("order_number", orderNumber)
-        .maybeSingle();
+    if (orderError) {
+      console.error("Order lookup failed:", orderError.message);
 
-      if (error) {
-        console.error("Order lookup failed:", error.message);
-        return new NextResponse("Order lookup failed", { status: 500 });
-      }
-
-      if (!order) {
-        return new NextResponse("Order not found", { status: 404 });
-      }
-
-      if (order.payment_status !== "paid") {
-        const { error: updateError } = await supabase
-          .from("celik_minda_orders")
-          .update({
-            payment_status: "paid",
-            order_status: "confirmed",
-          })
-          .eq("id", order.id);
-
-        if (updateError) {
-          console.error("Payment update failed:", updateError.message);
-          return new NextResponse("Database update failed", {
-            status: 500,
-          });
-        }
-      }
-
-      const currentEmailStatus = String(
-        order.delivery_email_status || "pending",
+      return NextResponse.json(
+        { error: "Unable to retrieve order." },
+        { status: 500 }
       );
+    }
 
-      if (["pending", "failed"].includes(currentEmailStatus)) {
-        const { data: claimed, error: claimError } = await supabase
-          .from("celik_minda_orders")
-          .update({ delivery_email_status: "sending" })
-          .eq("id", order.id)
-          .in("delivery_email_status", ["pending", "failed"])
-          .select("id")
+    if (!order) {
+      return NextResponse.json(
+        { error: "Order not found." },
+        { status: 404 }
+      );
+    }
+
+    // Status 3 indicates successful payment.
+    if (paymentStatus === "3") {
+      if (order.payment_status === "paid") {
+        return NextResponse.json({ received: true });
+      }
+
+      const { error: updateOrderError } = await supabaseAdmin
+        .from("celik_minda_orders")
+        .update({
+          payment_status: "paid",
+          order_status: "confirmed",
+        })
+        .eq("order_number", orderNumber);
+
+      if (updateOrderError) {
+        console.error(
+          "Order payment update failed:",
+          updateOrderError.message
+        );
+
+        return NextResponse.json(
+          { error: "Unable to update order payment." },
+          { status: 500 }
+        );
+      }
+
+      const { data: delivery, error: deliveryLookupError } =
+        await supabaseAdmin
+          .from("celik_minda_email_deliveries")
+          .select("*")
+          .eq("order_number", orderNumber)
           .maybeSingle();
 
+      if (deliveryLookupError) {
+        console.error(
+          "Email delivery lookup failed:",
+          deliveryLookupError.message
+        );
+
+        return NextResponse.json(
+          { error: "Unable to check email delivery." },
+          { status: 500 }
+        );
+      }
+
+      // Do not send the same order email again.
+      if (delivery?.status === "sent" || delivery?.status === "sending") {
+        return NextResponse.json({ received: true });
+      }
+
+      if (delivery) {
+        const { error: claimError } = await supabaseAdmin
+          .from("celik_minda_email_deliveries")
+          .update({
+            status: "sending",
+            error_message: null,
+          })
+          .eq("order_number", orderNumber);
+
         if (claimError) {
-          console.error("Email claim failed:", claimError.message);
-          return new NextResponse("Email claim failed", { status: 500 });
+          console.error("Delivery update failed:", claimError.message);
+
+          return NextResponse.json(
+            { error: "Unable to prepare email delivery." },
+            { status: 500 }
+          );
         }
+      } else {
+        const { error: createError } = await supabaseAdmin
+          .from("celik_minda_email_deliveries")
+          .insert({
+            order_number: orderNumber,
+            status: "sending",
+          });
 
-        if (claimed) {
-          try {
-            await deliverPaidPdfOrder(order);
+        if (createError) {
+          console.error("Delivery record creation failed:", createError.message);
 
-            const { error: sentError } = await supabase
-              .from("celik_minda_orders")
-              .update({
-                delivery_email_status: "sent",
-                delivery_email_sent_at: new Date().toISOString(),
-              })
-              .eq("id", order.id)
-              .eq("delivery_email_status", "sending");
-
-            if (sentError) {
-              console.error("Email status update failed:", sentError.message);
-              return new NextResponse("Email sent; status update failed", {
-                status: 500,
-              });
-            }
-          } catch (emailError) {
-            console.error(
-              "Customer email failed:",
-              emailError instanceof Error
-                ? emailError.message
-                : "Unknown error",
-            );
-
-            await supabase
-              .from("celik_minda_orders")
-              .update({ delivery_email_status: "failed" })
-              .eq("id", order.id)
-              .eq("delivery_email_status", "sending");
-
-            return new NextResponse(
-              "Payment confirmed; email delivery failed",
-              { status: 500 },
-            );
-          }
+          return NextResponse.json(
+            { error: "Unable to create email delivery record." },
+            { status: 500 }
+          );
         }
       }
-    } else if (["2", "4", "5"].includes(status)) {
-      const { error } = await supabase
+
+      try {
+        await deliverPaidPdfOrder(order);
+
+        const { error: sentError } = await supabaseAdmin
+          .from("celik_minda_email_deliveries")
+          .update({
+            status: "sent",
+            error_message: null,
+          })
+          .eq("order_number", orderNumber);
+
+        if (sentError) {
+          console.error("Delivery status update failed:", sentError.message);
+
+          return NextResponse.json(
+            { error: "Unable to update delivery status." },
+            { status: 500 }
+          );
+        }
+
+        const { error: timestampError } = await supabaseAdmin
+          .from("celik_minda_orders")
+          .update({
+            delivery_email_sent_at: new Date().toISOString(),
+          })
+          .eq("order_number", orderNumber);
+
+        if (timestampError) {
+          console.error(
+            "Email timestamp update failed:",
+            timestampError.message
+          );
+        }
+      } catch (emailError) {
+        const message =
+          emailError instanceof Error
+            ? emailError.message
+            : "Unknown email delivery error";
+
+        console.error("PDF email delivery failed:", message);
+
+        await supabaseAdmin
+          .from("celik_minda_email_deliveries")
+          .update({
+            status: "failed",
+            error_message: message,
+          })
+          .eq("order_number", orderNumber);
+
+        return NextResponse.json(
+          { error: "Payment received, but email delivery failed." },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({ received: true });
+    }
+
+    // Status 2, 4 and 5 represent unsuccessful, cancelled or expired payments.
+    if (["2", "4", "5"].includes(paymentStatus)) {
+      const { error: failedUpdateError } = await supabaseAdmin
         .from("celik_minda_orders")
         .update({
           payment_status: "failed",
           order_status: "cancelled",
         })
         .eq("order_number", orderNumber)
-        .eq("payment_status", "pending");
+        .neq("payment_status", "paid");
 
-      if (error) {
-        console.error("Failed payment update failed:", error.message);
-        return new NextResponse("Database update failed", { status: 500 });
+      if (failedUpdateError) {
+        console.error(
+          "Failed payment update error:",
+          failedUpdateError.message
+        );
+
+        return NextResponse.json(
+          { error: "Unable to update failed payment." },
+          { status: 500 }
+        );
       }
     }
 
     return NextResponse.json({ received: true });
   } catch (error) {
-    console.error(
-      "Bayarcash callback error:",
-      error instanceof Error ? error.message : "Unknown error",
-    );
+    console.error("Bayarcash callback error:", error);
 
-    return new NextResponse("Callback processing failed", { status: 500 });
+    return NextResponse.json(
+      { error: "Unable to process payment callback." },
+      { status: 500 }
+    );
   }
 }
