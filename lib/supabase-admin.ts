@@ -15,6 +15,7 @@ export const supabaseAdmin = createClient(url, serviceRoleKey, {
   },
 });
 
+// Compatibility for files that still call getSupabaseAdmin().
 export function getSupabaseAdmin() {
   return supabaseAdmin;
 }
