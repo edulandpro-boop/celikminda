@@ -1,19 +1,28 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-let adminClient: SupabaseClient | null = null;
+import "server-only";
+import { createClient } from "@supabase/supabase-js";
 
-/** Create the privileged Supabase client only when an API route runs, not during next build. */
-export function getSupabaseAdmin(): SupabaseClient {
-  if (adminClient) return adminClient;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
-    throw new Error("Missing Supabase server environment variables. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel.");
+if (!supabaseUrl || !serviceRoleKey) {
+  throw new Error(
+    "Missing Supabase server environment variables."
+  );
+}
+
+export const supabaseAdmin = createClient(
+  supabaseUrl,
+  serviceRoleKey,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
   }
+);
 
-  adminClient = createClient(url, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  return adminClient;
+// Support existing code that calls getSupabaseAdmin().
+export function getSupabaseAdmin() {
+  return supabaseAdmin;
 }
